@@ -15,8 +15,45 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
+from django.http import JsonResponse
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
+
+
+def home(request):
+    return JsonResponse({
+        'project': 'MAISON API',
+        'docs': {
+            'swagger': '/api/docs/',
+            'redoc': '/api/redoc/',
+            'schema': '/api/schema/',
+            'admin': '/admin/',
+        },
+        'endpoints': {
+            'register': '/api/auth/register/',
+            'login': '/api/auth/login/',
+            'refresh': '/api/auth/refresh/',
+            'profile': '/api/auth/profile/',
+            'categories': '/api/categories/',
+            'dishes': '/api/dishes/',
+            'cart': '/api/cart/',
+            'orders': '/api/orders/',
+            'bookings': '/api/bookings/',
+            'reviews': '/api/reviews/',
+            'restaurant': '/api/restaurant/',
+        },
+    }, json_dumps_params={'ensure_ascii': False, 'indent': 2})
+
 
 urlpatterns = [
+    path('', home),
     path('admin/', admin.site.urls),
+    path('api/', include('maison.urls')),
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema')),
+    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema')),
 ]
+
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

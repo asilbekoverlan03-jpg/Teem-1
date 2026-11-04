@@ -1,25 +1,26 @@
-from datetime import date
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
-from .models import (User, Category, Dish, Booking, Review,
-                     RestaurantInfo, RestaurantPhoto, CartItem, Order, OrderItem)
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from .models import (User, Category, Dish, Booking, Order, OrderItem,
+                     Review, RestaurantInfo, RestaurantPhoto)
 
 
-# ---------- Пользователи ----------
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
-
-    class Meta:
-        model = User
-        fields = ['id', 'username', 'email', 'phone', 'password']
-
-    def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
-
-
+# ---------- Сотрудники ----------
 class UserSerializer(serializers.ModelSerializer):
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'phone']
+        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'phone', 'role', 'role_display']
+
+
+class LoginSerializer(TokenObtainPairSerializer):
+    """Вход: кроме токенов отдаём данные сотрудника и роль"""
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        data['user'] = UserSerializer(self.user).data
+        return data
 
 
 # ---------- Меню ----------
@@ -34,35 +35,87 @@ class DishSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Dish
-        fields = ['id', 'name', 'description', 'price', 'image',
-                  'category', 'category_name', 'is_popular']
+        fields = ['id', 'name', 'description', 'composition', 'price', 'image',
+                  'badge', 'category', 'category_name', 'is_popular']
 
 
-# ---------- Бронирование ----------
-class BookingSerializer(serializers.ModelSerializer):
+# ---------- Бронь с сайта ----------
+class BookingCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
-        fields = ['id', 'name', 'phone', 'date', 'time', 'guests', 'comment', 'status', 'created_at']
-        read_only_fields = ['status', 'created_at']
-
-    def validate_date(self, value):
-        if value < date.today():
-            raise serializers.ValidationError('Нельзя бронировать на прошедшую дату')
-        return value
+        fields = ['id', 'guest_name', 'phone', 'date', 'time', 'guests', 'comment', 'status']
+        read_only_fields = ['id', 'status']
 
     def validate_guests(self, value):
         if value < 1 or value > 20:
             raise serializers.ValidationError('Гостей должно быть от 1 до 20')
         return value
 
+    def validate(self, data):
+        now = timezone.localtime()
+        if data['date'] < now.date():
+            raise serializers.ValidationError({'date': 'Нельзя бронировать на прошедшую дату'})
+        if data['date'] == now.date() and data['time'] <= now.time():
+            raise serializers.ValidationError({'time': 'Это время уже прошло'})
+        return data
 
-# ---------- Отзывы ----------
-class ReviewSerializer(serializers.ModelSerializer):
-    user_name = serializers.CharField(source='user.username', read_only=True)
+
+# ---------- Заказ с сайта ----------
+class OrderItemInputSerializer(serializers.Serializer):
+    dish = serializers.PrimaryKeyRelatedField(queryset=Dish.objects.filter(is_available=True))
+    quantity = serializers.IntegerField(min_value=1, max_value=50)
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ['id', 'dish', 'dish_name', 'quantity', 'price', 'comment']
+
+
+class OrderCreateSerializer(serializers.ModelSerializer):
+    type = serializers.ChoiceField(choices=[('takeaway', 'С собой'), ('delivery', 'Доставка')])
+    guest_name = serializers.CharField(max_length=100)
+    phone = serializers.CharField(max_length=20)
+    items = OrderItemInputSerializer(many=True, write_only=True)
+    order_items = OrderItemSerializer(source='items', many=True, read_only=True)
 
     class Meta:
+        model = Order
+        fields = ['id', 'type', 'guest_name', 'phone', 'address', 'comment',
+                  'items', 'order_items', 'total', 'status']
+        read_only_fields = ['id', 'total', 'status']
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError('Корзина пуста')
+        return value
+
+    def validate(self, data):
+        if data['type'] == 'delivery' and not data.get('address'):
+            raise serializers.ValidationError({'address': 'Укажите адрес доставки'})
+        return data
+    def create(self, validated_data):
+        items = validated_data.pop('items')
+        with transaction.atomic():
+            order = Order.objects.create(source='site', **validated_data)
+            for item in items:
+                dish = item['dish']
+                OrderItem.objects.create(
+                    order=order, dish=dish, dish_name=dish.name,
+                    quantity=item['quantity'],
+                    price=dish.price,          # цену берём из базы, а не с фронта
+                    comment=item.get('comment', ''),
+                )
+            order.recalc_total()
+        return order
+
+
+# ---------- Отзывы и инфо ----------
+class ReviewSerializer(serializers.ModelSerializer):
+    class Meta:
         model = Review
-        fields = ['id', 'user_name', 'rating', 'text', 'created_at']
+        fields = ['id', 'name', 'rating', 'text', 'created_at']
         read_only_fields = ['created_at']
 
     def validate_rating(self, value):
@@ -71,7 +124,6 @@ class ReviewSerializer(serializers.ModelSerializer):
         return value
 
 
-# ---------- О ресторане ----------
 class RestaurantPhotoSerializer(serializers.ModelSerializer):
     class Meta:
         model = RestaurantPhoto
@@ -84,36 +136,3 @@ class RestaurantInfoSerializer(serializers.ModelSerializer):
     class Meta:
         model = RestaurantInfo
         fields = ['id', 'name', 'address', 'phone', 'email', 'work_hours', 'description', 'photos']
-
-
-# ---------- Корзина ----------
-class CartItemSerializer(serializers.ModelSerializer):
-    dish_name = serializers.CharField(source='dish.name', read_only=True)
-    dish_price = serializers.DecimalField(source='dish.price', max_digits=10, decimal_places=2, read_only=True)
-    dish_image = serializers.ImageField(source='dish.image', read_only=True)
-    total = serializers.SerializerMethodField()
-
-    class Meta:
-        model = CartItem
-        fields = ['id', 'dish', 'dish_name', 'dish_price', 'dish_image', 'quantity', 'total']
-
-    def get_total(self, obj):
-        return obj.dish.price * obj.quantity
-
-
-# ---------- Заказы ----------
-class OrderItemSerializer(serializers.ModelSerializer):
-    dish_name = serializers.CharField(source='dish.name', read_only=True)
-
-    class Meta:
-        model = OrderItem
-        fields = ['id', 'dish_name', 'quantity', 'price']
-
-
-class OrderSerializer(serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = Order
-        fields = ['id', 'total', 'status', 'comment', 'created_at', 'items']
-        read_only_fields = ['total', 'status', 'created_at']

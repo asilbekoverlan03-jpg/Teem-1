@@ -31,18 +31,19 @@ def home(request):
             'schema': '/api/schema/',
             'admin': '/admin/',
         },
-        'endpoints': {
-            'register': '/api/auth/register/',
+        'site': {
+            'categories': '/api/categories/',
+            'dishes': '/api/dishes/',
+            'dish_detail': '/api/dishes/<id>/',
+            'booking_create': '/api/bookings/',
+            'order_create': '/api/orders/',
+            'reviews': '/api/reviews/',
+            'restaurant': '/api/restaurant/',
+        },
+        'crm': {
             'login': '/api/auth/login/',
             'refresh': '/api/auth/refresh/',
             'profile': '/api/auth/profile/',
-            'categories': '/api/categories/',
-            'dishes': '/api/dishes/',
-            'cart': '/api/cart/',
-            'orders': '/api/orders/',
-            'bookings': '/api/bookings/',
-            'reviews': '/api/reviews/',
-            'restaurant': '/api/restaurant/',
         },
     }, json_dumps_params={'ensure_ascii': False, 'indent': 2})
 
